@@ -31,6 +31,7 @@ class KCubeController:
         self.device.Connect(serial_number)
         device_info = self.device.GetDeviceInfo()
         print(f"Connected to device {device_info.Name} with serial number {serial_number}")
+        self.max_move = 3000
         return
 
     def get_actual_positions(self):
@@ -42,17 +43,23 @@ class KCubeController:
         channels = [1, 2, 3, 4]
         assert len(positions) == len(channels), "position array has incorrect length"
         for channel, position, current_pos in zip(channels, positions, self.positions):
-            if position !=current_pos:
-                self.device.MoveTo(channel, position, 0)
+            if position != current_pos:
+                if np.abs(position - current_pos) <= self.max_move:
+                    self.device.MoveTo(channel, position, 0)
+                else:
+                    raise Exception(f"Requested move from {current_pos} to {position} exceeds maximum move size of {self.max_move}.")
 
+    def set_maximum_move(self, max_move):
+        self.max_move = max_move
 
 class KinesisServer(DeviceServer):
-    def __init__(self, variable_names, serial_numbers, port):
+    def __init__(self, variable_names, serial_numbers, port, max_move_names):
         super().__init__(port)
         print("Starting Kinesis Server")
         self.serials = serial_numbers
         self.variables = variable_names
         self.controllers = [KCubeController(i) for i in self.serials]
+        self.max_move_names = max_move_names
 
     def transition_to_buffered(self, h5_filepath):
         """
@@ -64,11 +71,15 @@ class KinesisServer(DeviceServer):
             desired_positions = [
                 self.get_desired_positions(i, f) for i in self.variables
             ]
+            max_moves = [f["globals"].attrs[i] for i in self.max_move_names]
 
         print(f"Desired positions are: {desired_positions}")
         actual_positions = [i.get_actual_positions() for i in self.controllers]
         print(f"Actual positions are: {actual_positions}")
-        for controller, positions in zip(self.controllers, desired_positions):
+        print(f"Maximum allowed moves are: {max_moves}")
+        assert len(max_moves) == len(desired_positions), "Maximum move array length must be same length as controller array length"
+        for controller, positions, max_move in zip(self.controllers, desired_positions, max_moves):
+            controller.set_maximum_move(max_move)
             controller.move_to_positions(positions)
         print("transition to buffered")
 
@@ -97,9 +108,14 @@ class KinesisServer(DeviceServer):
         print("abort")
 
 
-serials = ["97100362", "97100395"]
-global_names = [["Kinesis_Ch1", "Kinesis_Ch2", "Kinesis_Ch3", "Kinesis_Ch4"]]
+serials = ["97100395"]
+global_names = [["Tweezers_Picomotor_1",
+                 "Tweezers_Picomotor_2",
+                 "Tweezers_Picomotor_3",
+                 "Tweezers_Picomotor_4"]]
+
+max_names = ["Tweezers_Picomotor_Max"]
 port = 7426
 assert len(serials) == len(global_names), "List of globals must be the same length as serial numbers"
-kserver = KinesisServer(global_names, serials, port)
+kserver = KinesisServer(global_names, serials, port, max_names)
 kserver.shutdown_on_interrupt()
